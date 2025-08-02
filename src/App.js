@@ -16,6 +16,7 @@ import {
 } from 'firebase/firestore';
 import { initializeApp } from 'firebase/app';
 import LoadingSpinner from './LoadingSpinner';
+import { config } from './config';
 
 // Configure PDF.js worker with optimized settings for better performance
 if (typeof window !== 'undefined') {
@@ -34,24 +35,22 @@ if (typeof window !== 'undefined') {
 let app, db, supabase;
 
 const initializeFirebase = () => {
-  if (!app && window.__firebase_config) {
-    app = initializeApp(window.__firebase_config);
+  if (!app && config.firebase.apiKey !== "your-api-key") {
+    app = initializeApp(config.firebase);
     db = getFirestore(app);
   }
   return { app, db };
 };
 
 const initializeSupabase = () => {
-  if (!supabase) {
-    const supabaseUrl = 'YOUR_SUPABASE_URL';
-    const supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
-    supabase = createClient(supabaseUrl, supabaseAnonKey);
+  if (!supabase && config.supabase.url !== "https://your-project.supabase.co") {
+    supabase = createClient(config.supabase.url, config.supabase.anonKey);
   }
   return supabase;
 };
 
 // App ID for Firestore structure
-const appId = window.__app_id;
+const appId = config.appId;
 
 // Helper function to generate anonymous user ID
 const generateAnonymousId = () => {
@@ -197,6 +196,13 @@ function App() {
     try {
       setLoading(true);
       
+      // Check if Firebase is configured
+      if (config.firebase.apiKey === "your-api-key") {
+        console.warn('Firebase not configured - PDFs will not be loaded');
+        setPdfs([]);
+        return;
+      }
+      
       // Initialize Firebase lazily
       const { db: firestore } = initializeFirebase();
       if (!firestore) {
@@ -234,6 +240,12 @@ function App() {
       return;
     }
 
+    // Check if configurations are properly set
+    if (config.firebase.apiKey === "your-api-key" || config.supabase.url === "https://your-project.supabase.co") {
+      showModalMessage('Please configure Firebase and Supabase in src/config.js before uploading files.', 'error');
+      return;
+    }
+
     try {
       setIsUploading(true);
       setUploadProgress(0);
@@ -244,6 +256,9 @@ function App() {
 
       // Initialize Supabase lazily
       const supabaseClient = initializeSupabase();
+      if (!supabaseClient) {
+        throw new Error('Supabase not configured');
+      }
       
       // Upload to Supabase Storage
       const { data, error } = await supabaseClient.storage
@@ -273,6 +288,9 @@ function App() {
 
       // Initialize Firebase lazily
       const { db: firestore } = initializeFirebase();
+      if (!firestore) {
+        throw new Error('Firebase not configured');
+      }
       
       await setDoc(
         doc(firestore, `artifacts/${appId}/users/${userId}/pdfs`, pdfId),
@@ -592,7 +610,13 @@ function App() {
                 <input
                   type="text"
                   value={tempUserId}
-                  onChange={(e) => setTempUserId(e.target.value)}
+                  onChange={(e) => {
+                    try {
+                      setTempUserId(e.target.value);
+                    } catch (error) {
+                      console.error('Error updating tempUserId:', error);
+                    }
+                  }}
                   onKeyPress={(e) => e.key === 'Enter' && handleCustomUserId()}
                   className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
                   placeholder="Enter your custom ID (min 3 characters)"
@@ -729,7 +753,14 @@ function App() {
                   ref={fileInputRef}
                   type="file"
                   accept=".pdf"
-                  onChange={handleFileUpload}
+                  onChange={(e) => {
+                    try {
+                      handleFileUpload(e);
+                    } catch (error) {
+                      console.error('Error handling file upload:', error);
+                      showModalMessage('Error processing file upload. Please try again.', 'error');
+                    }
+                  }}
                   disabled={isUploading}
                   className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
                 />

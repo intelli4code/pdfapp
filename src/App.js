@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { createClient } from '@supabase/supabase-js';
 import { initializeApp } from 'firebase/app';
@@ -42,7 +42,6 @@ function App() {
   const [uploadProgress, setUploadProgress] = useState(0);
   const [isUploading, setIsUploading] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState('');
 
   // PDF viewer state
   const [numPages, setNumPages] = useState(null);

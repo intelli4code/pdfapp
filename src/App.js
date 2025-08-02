@@ -1,5 +1,8 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react';
+import React, { useState, useEffect, useRef, useCallback, Suspense, lazy } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
+
+// Lazy load components for better performance
+const LazyPDFViewer = lazy(() => import('./components/PDFViewer'));
 import { createClient } from '@supabase/supabase-js';
 import { 
   getFirestore, 
@@ -12,19 +15,40 @@ import {
   orderBy 
 } from 'firebase/firestore';
 import { initializeApp } from 'firebase/app';
+import LoadingSpinner from './LoadingSpinner';
 
-// Configure PDF.js worker
-pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
+// Configure PDF.js worker with optimized settings for better performance
+if (typeof window !== 'undefined') {
+  // Use local worker for better performance
+  pdfjs.GlobalWorkerOptions.workerSrc = new URL(
+    'pdfjs-dist/build/pdf.worker.min.js',
+    import.meta.url,
+  ).toString();
+  
+  // Optimize PDF.js settings for faster loading
+  pdfjs.GlobalWorkerOptions.maxImageSize = 50 * 1024 * 1024; // 50MB
+  pdfjs.GlobalWorkerOptions.cMapPacked = true;
+}
 
-// Initialize Firebase (using global variables from Canvas environment)
-const firebaseConfig = window.__firebase_config;
-const app = initializeApp(firebaseConfig);
-const db = getFirestore(app);
+// Lazy load Firebase and Supabase configurations
+let app, db, supabase;
 
-// Initialize Supabase (using placeholder values - to be filled in)
-const supabaseUrl = 'YOUR_SUPABASE_URL';
-const supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
-const supabase = createClient(supabaseUrl, supabaseAnonKey);
+const initializeFirebase = () => {
+  if (!app && window.__firebase_config) {
+    app = initializeApp(window.__firebase_config);
+    db = getFirestore(app);
+  }
+  return { app, db };
+};
+
+const initializeSupabase = () => {
+  if (!supabase) {
+    const supabaseUrl = 'YOUR_SUPABASE_URL';
+    const supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+    supabase = createClient(supabaseUrl, supabaseAnonKey);
+  }
+  return supabase;
+};
 
 // App ID for Firestore structure
 const appId = window.__app_id;
@@ -168,11 +192,18 @@ function App() {
     setShowModal(true);
   };
 
-  // Load user's PDFs from Firestore
-  const loadUserPdfs = async (userId) => {
+  // Load user's PDFs from Firestore with lazy initialization
+  const loadUserPdfs = useCallback(async (userId) => {
     try {
       setLoading(true);
-      const pdfsRef = collection(db, `artifacts/${appId}/users/${userId}/pdfs`);
+      
+      // Initialize Firebase lazily
+      const { db: firestore } = initializeFirebase();
+      if (!firestore) {
+        throw new Error('Firebase not configured');
+      }
+      
+      const pdfsRef = collection(firestore, `artifacts/${appId}/users/${userId}/pdfs`);
       const q = query(pdfsRef, orderBy('uploadedAt', 'desc'));
       const querySnapshot = await getDocs(q);
       
@@ -188,7 +219,7 @@ function App() {
     } finally {
       setLoading(false);
     }
-  };
+  }, [appId]);
 
   // Handle PDF file upload
   const handleFileUpload = async (event) => {
@@ -211,8 +242,11 @@ function App() {
       const timestamp = Date.now();
       const filePath = `${userId}/${timestamp}_${file.name}`;
 
+      // Initialize Supabase lazily
+      const supabaseClient = initializeSupabase();
+      
       // Upload to Supabase Storage
-      const { data, error } = await supabase.storage
+      const { data, error } = await supabaseClient.storage
         .from('pdf_documents')
         .upload(filePath, file, {
           onUploadProgress: (progress) => {
@@ -223,7 +257,7 @@ function App() {
       if (error) throw error;
 
       // Get public URL
-      const { data: { publicUrl } } = supabase.storage
+      const { data: { publicUrl } } = supabaseClient.storage
         .from('pdf_documents')
         .getPublicUrl(filePath);
 
@@ -237,8 +271,11 @@ function App() {
         annotations_data: {}
       };
 
+      // Initialize Firebase lazily
+      const { db: firestore } = initializeFirebase();
+      
       await setDoc(
-        doc(db, `artifacts/${appId}/users/${userId}/pdfs`, pdfId),
+        doc(firestore, `artifacts/${appId}/users/${userId}/pdfs`, pdfId),
         pdfMetadata
       );
 
@@ -741,10 +778,7 @@ function App() {
               </div>
               
               {loading ? (
-                <div className="p-12 text-center">
-                  <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-blue-500 mx-auto"></div>
-                  <p className="mt-4 text-gray-600 font-medium">Loading your documents...</p>
-                </div>
+                <LoadingSpinner message="Loading your documents..." size="large" />
               ) : pdfs.length === 0 ? (
                 <div className="p-12 text-center">
                   <div className="w-20 h-20 mx-auto mb-4 bg-gray-100 rounded-2xl flex items-center justify-center">
@@ -907,38 +941,22 @@ function App() {
             </div>
 
             {/* PDF Viewer Container */}
-            <div className="p-4">
-              <div 
-                ref={pdfViewerRef}
-                className="relative inline-block border border-gray-300 shadow-lg"
-                style={{ cursor: isDrawing ? 'crosshair' : 'crosshair' }}
-              >
-                <Document
-                  file={selectedPdf.publicUrl}
-                  onLoadSuccess={onDocumentLoadSuccess}
-                  onLoadError={(error) => {
-                    console.error('PDF load error:', error);
-                    showModalMessage('Failed to load PDF. Please try again.', 'error');
-                  }}
-                >
-                  <Page
-                    pageNumber={pageNumber}
-                    scale={pdfScale}
-                    onRenderSuccess={onPageRenderSuccess}
-                  />
-                </Document>
-                
-                {/* Annotation Canvas Overlay */}
-                <canvas
-                  ref={canvasRef}
-                  onMouseDown={handleMouseDown}
-                  onMouseMove={handleMouseMove}
-                  onMouseUp={handleMouseUp}
-                  className="absolute top-0 left-0 pointer-events-auto"
-                  style={{ cursor: 'crosshair' }}
-                />
-              </div>
-            </div>
+            <Suspense fallback={<LoadingSpinner message="Loading PDF viewer..." size="large" />}>
+              <LazyPDFViewer
+                selectedPdf={selectedPdf}
+                pageNumber={pageNumber}
+                pdfScale={pdfScale}
+                onDocumentLoadSuccess={onDocumentLoadSuccess}
+                onPageRenderSuccess={onPageRenderSuccess}
+                showModalMessage={showModalMessage}
+                canvasRef={canvasRef}
+                pdfViewerRef={pdfViewerRef}
+                handleMouseDown={handleMouseDown}
+                handleMouseMove={handleMouseMove}
+                handleMouseUp={handleMouseUp}
+                isDrawing={isDrawing}
+              />
+            </Suspense>
           </div>
         )}
       </main>

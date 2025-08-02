@@ -1,8 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { createClient } from '@supabase/supabase-js';
-import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
 import { 
   getFirestore, 
   collection, 
@@ -13,6 +11,7 @@ import {
   query, 
   orderBy 
 } from 'firebase/firestore';
+import { initializeApp } from 'firebase/app';
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
@@ -20,7 +19,6 @@ pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.vers
 // Initialize Firebase (using global variables from Canvas environment)
 const firebaseConfig = window.__firebase_config;
 const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
 const db = getFirestore(app);
 
 // Initialize Supabase (using placeholder values - to be filled in)
@@ -31,10 +29,39 @@ const supabase = createClient(supabaseUrl, supabaseAnonKey);
 // App ID for Firestore structure
 const appId = window.__app_id;
 
+// Helper function to generate anonymous user ID
+const generateAnonymousId = () => {
+  const characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789';
+  let result = '';
+  for (let i = 0; i < 12; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length));
+  }
+  return result;
+};
+
+// Helper function to save user ID to localStorage
+const saveUserIdToStorage = (userId) => {
+  localStorage.setItem('pdf_annotator_user_id', userId);
+  const savedIds = JSON.parse(localStorage.getItem('pdf_annotator_saved_ids') || '[]');
+  if (!savedIds.includes(userId)) {
+    savedIds.unshift(userId);
+    // Keep only last 5 IDs
+    localStorage.setItem('pdf_annotator_saved_ids', JSON.stringify(savedIds.slice(0, 5)));
+  }
+};
+
+// Helper function to get saved user IDs
+const getSavedUserIds = () => {
+  return JSON.parse(localStorage.getItem('pdf_annotator_saved_ids') || '[]');
+};
+
 function App() {
-  // Authentication state
-  const [user, setUser] = useState(null);
-  const [authLoading, setAuthLoading] = useState(true);
+  // User state (replacing authentication state)
+  const [userId, setUserId] = useState(null);
+  const [isUserIdSet, setIsUserIdSet] = useState(false);
+  const [tempUserId, setTempUserId] = useState('');
+  const [savedIds, setSavedIds] = useState([]);
+  const [showIdInput, setShowIdInput] = useState(true);
 
   // PDF management state
   const [pdfs, setPdfs] = useState([]);
@@ -65,18 +92,74 @@ function App() {
   const [modalMessage, setModalMessage] = useState('');
   const [modalType, setModalType] = useState('info'); // 'info', 'error', 'success'
 
-  // Initialize authentication
+  // Initialize user ID
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
-      setAuthLoading(false);
-      if (user) {
-        loadUserPdfs(user.uid);
-      }
-    });
-
-    return () => unsubscribe();
+    const savedId = localStorage.getItem('pdf_annotator_user_id');
+    const allSavedIds = getSavedUserIds();
+    setSavedIds(allSavedIds);
+    
+    if (savedId) {
+      setUserId(savedId);
+      setIsUserIdSet(true);
+      setShowIdInput(false);
+      loadUserPdfs(savedId);
+    } else {
+      setTempUserId('');
+      setShowIdInput(true);
+    }
   }, []);
+
+  // Handle creating anonymous user
+  const handleAnonymousUser = () => {
+    const anonymousId = generateAnonymousId();
+    setUserId(anonymousId);
+    setIsUserIdSet(true);
+    setShowIdInput(false);
+    saveUserIdToStorage(anonymousId);
+    loadUserPdfs(anonymousId);
+    showModalMessage(`Welcome! Your anonymous ID is: ${anonymousId}. Save this ID to access your files later.`, 'success');
+  };
+
+  // Handle custom user ID
+  const handleCustomUserId = () => {
+    if (!tempUserId.trim()) {
+      showModalMessage('Please enter a valid user ID.', 'error');
+      return;
+    }
+    
+    if (tempUserId.length < 3) {
+      showModalMessage('User ID must be at least 3 characters long.', 'error');
+      return;
+    }
+
+    setUserId(tempUserId.trim());
+    setIsUserIdSet(true);
+    setShowIdInput(false);
+    saveUserIdToStorage(tempUserId.trim());
+    loadUserPdfs(tempUserId.trim());
+    showModalMessage(`Welcome back! Using ID: ${tempUserId.trim()}`, 'success');
+  };
+
+  // Handle selecting saved ID
+  const handleSelectSavedId = (savedId) => {
+    setUserId(savedId);
+    setIsUserIdSet(true);
+    setShowIdInput(false);
+    saveUserIdToStorage(savedId);
+    loadUserPdfs(savedId);
+    showModalMessage(`Welcome back! Using ID: ${savedId}`, 'success');
+  };
+
+  // Handle logout (switch user)
+  const handleSwitchUser = () => {
+    setUserId(null);
+    setIsUserIdSet(false);
+    setShowIdInput(true);
+    setTempUserId('');
+    setPdfs([]);
+    setSelectedPdf(null);
+    setSavedIds(getSavedUserIds());
+  };
 
   // Show modal helper
   const showModalMessage = (message, type = 'info') => {
@@ -115,8 +198,8 @@ function App() {
       return;
     }
 
-    if (!user) {
-      showModalMessage('You must be logged in to upload files.', 'error');
+    if (!userId) {
+      showModalMessage('You must have a user ID to upload files.', 'error');
       return;
     }
 
@@ -126,7 +209,7 @@ function App() {
 
       // Create unique file path
       const timestamp = Date.now();
-      const filePath = `${user.uid}/${timestamp}_${file.name}`;
+      const filePath = `${userId}/${timestamp}_${file.name}`;
 
       // Upload to Supabase Storage
       const { data, error } = await supabase.storage
@@ -155,12 +238,12 @@ function App() {
       };
 
       await setDoc(
-        doc(db, `artifacts/${appId}/users/${user.uid}/pdfs`, pdfId),
+        doc(db, `artifacts/${appId}/users/${userId}/pdfs`, pdfId),
         pdfMetadata
       );
 
       // Refresh PDF list
-      await loadUserPdfs(user.uid);
+      await loadUserPdfs(userId);
       showModalMessage('PDF uploaded successfully!', 'success');
 
     } catch (error) {
@@ -310,11 +393,11 @@ function App() {
 
   // Save annotations to Firestore
   const saveAnnotations = async (annotationsData) => {
-    if (!selectedPdf || !user) return;
+    if (!selectedPdf || !userId) return;
 
     try {
       await setDoc(
-        doc(db, `artifacts/${appId}/users/${user.uid}/pdfs`, selectedPdf.id),
+        doc(db, `artifacts/${appId}/users/${userId}/pdfs`, selectedPdf.id),
         { annotations_data: annotationsData },
         { merge: true }
       );
@@ -398,10 +481,10 @@ function App() {
       }
 
       // Delete from Firestore
-      await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/pdfs`, pdf.id));
+      await deleteDoc(doc(db, `artifacts/${appId}/users/${userId}/pdfs`, pdf.id));
 
       // Refresh PDF list
-      await loadUserPdfs(user.uid);
+      await loadUserPdfs(userId);
       showModalMessage('PDF deleted successfully!', 'success');
 
       // Close viewer if this PDF was being viewed
@@ -422,46 +505,167 @@ function App() {
     redrawAnnotations();
   }, [pageNumber, annotations]);
 
-  if (authLoading) {
+  if (!isUserIdSet) {
     return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-center">
-          <div className="animate-spin rounded-full h-12 w-12 border-b-2 border-blue-500 mx-auto"></div>
-          <p className="mt-4 text-gray-600">Loading...</p>
+      <div className="min-h-screen bg-gradient-to-br from-blue-50 via-white to-purple-50 flex items-center justify-center p-4">
+        <div className="w-full max-w-md">
+          {/* Header */}
+          <div className="text-center mb-8">
+            <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-r from-blue-500 to-purple-600 rounded-2xl flex items-center justify-center">
+              <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+            </div>
+            <h1 className="text-3xl font-bold text-gray-900 mb-2">PDF Annotator</h1>
+            <p className="text-gray-600">Choose how you'd like to continue</p>
+          </div>
+
+          <div className="bg-white rounded-2xl shadow-xl p-6 space-y-6">
+            {/* Anonymous User Button */}
+            <div>
+              <button
+                onClick={handleAnonymousUser}
+                className="w-full bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white font-semibold py-4 px-6 rounded-xl transition-all duration-200 transform hover:scale-105 shadow-lg hover:shadow-xl"
+              >
+                <div className="flex items-center justify-center space-x-3">
+                  <svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                  </svg>
+                  <span>Create Anonymous Account</span>
+                </div>
+                <p className="text-green-100 text-sm mt-1">Get started instantly with a random ID</p>
+              </button>
+            </div>
+
+            <div className="relative">
+              <div className="absolute inset-0 flex items-center">
+                <div className="w-full border-t border-gray-200"></div>
+              </div>
+              <div className="relative flex justify-center text-sm">
+                <span className="px-4 bg-white text-gray-500">or</span>
+              </div>
+            </div>
+
+            {/* Custom ID Input */}
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-2">
+                Use Custom ID
+              </label>
+              <div className="space-y-3">
+                <input
+                  type="text"
+                  value={tempUserId}
+                  onChange={(e) => setTempUserId(e.target.value)}
+                  onKeyPress={(e) => e.key === 'Enter' && handleCustomUserId()}
+                  className="w-full px-4 py-3 border border-gray-300 rounded-xl focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-all"
+                  placeholder="Enter your custom ID (min 3 characters)"
+                />
+                <button
+                  onClick={handleCustomUserId}
+                  disabled={!tempUserId.trim() || tempUserId.length < 3}
+                  className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-300 disabled:cursor-not-allowed text-white font-semibold py-3 px-6 rounded-xl transition-all duration-200"
+                >
+                  Continue with Custom ID
+                </button>
+              </div>
+            </div>
+
+            {/* Saved IDs */}
+            {savedIds.length > 0 && (
+              <>
+                <div className="relative">
+                  <div className="absolute inset-0 flex items-center">
+                    <div className="w-full border-t border-gray-200"></div>
+                  </div>
+                  <div className="relative flex justify-center text-sm">
+                    <span className="px-4 bg-white text-gray-500">recent IDs</span>
+                  </div>
+                </div>
+                
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-3">
+                    Or select a previous ID
+                  </label>
+                  <div className="space-y-2">
+                    {savedIds.map((savedId, index) => (
+                      <button
+                        key={index}
+                        onClick={() => handleSelectSavedId(savedId)}
+                        className="w-full text-left px-4 py-3 border border-gray-200 rounded-xl hover:border-blue-300 hover:bg-blue-50 transition-all duration-200 group"
+                      >
+                        <div className="flex items-center justify-between">
+                          <span className="text-gray-700 font-medium group-hover:text-blue-700">
+                            {savedId}
+                          </span>
+                          <svg className="w-5 h-5 text-gray-400 group-hover:text-blue-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" />
+                          </svg>
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              </>
+            )}
+          </div>
+
+          {/* Footer */}
+          <div className="text-center mt-6">
+            <p className="text-sm text-gray-500">
+              Your ID will be saved locally for future access
+            </p>
+          </div>
         </div>
       </div>
     );
   }
 
-  if (!user) {
-    return (
-      <div className="min-h-screen bg-gray-100 flex items-center justify-center">
-        <div className="text-center">
-          <h1 className="text-2xl font-bold text-gray-800 mb-4">Authentication Required</h1>
-          <p className="text-gray-600">Please log in to access the PDF Annotator.</p>
-        </div>
-      </div>
-    );
-  }
+
 
   return (
-    <div className="min-h-screen bg-gray-100">
+    <div className="min-h-screen bg-gradient-to-br from-gray-50 via-blue-50 to-indigo-50">
       {/* Header */}
-      <header className="bg-white shadow-sm border-b">
+      <header className="bg-white shadow-lg border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-4">
           <div className="flex justify-between items-center">
-            <div>
-              <h1 className="text-2xl font-bold text-gray-900">PDF Annotator</h1>
-              <p className="text-sm text-gray-600">User ID: {user.uid}</p>
+            <div className="flex items-center space-x-4">
+              <div className="w-10 h-10 bg-gradient-to-r from-blue-500 to-purple-600 rounded-xl flex items-center justify-center">
+                <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                </svg>
+              </div>
+              <div>
+                <h1 className="text-2xl font-bold text-gray-900">PDF Annotator</h1>
+                <div className="flex items-center space-x-2">
+                  <span className="text-sm text-gray-600">ID:</span>
+                  <span className="text-sm font-mono bg-gray-100 px-2 py-1 rounded">{userId}</span>
+                </div>
+              </div>
             </div>
-            {selectedPdf && (
+            
+            <div className="flex items-center space-x-3">
+              {selectedPdf && (
+                <button
+                  onClick={closePdfViewer}
+                  className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-all duration-200 flex items-center space-x-2"
+                >
+                  <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 19l-7-7m0 0l7-7m-7 7h18" />
+                  </svg>
+                  <span>Back to Library</span>
+                </button>
+              )}
+              
               <button
-                onClick={closePdfViewer}
-                className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                onClick={handleSwitchUser}
+                className="px-4 py-2 bg-indigo-500 text-white rounded-lg hover:bg-indigo-600 transition-all duration-200 flex items-center space-x-2"
               >
-                ← Back to Library
+                <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M8 7h12m0 0l-4-4m4 4l-4 4m0 6H4m0 0l4 4m-4-4l4-4" />
+                </svg>
+                <span>Switch User</span>
               </button>
-            )}
+            </div>
           </div>
         </div>
       </header>
@@ -470,86 +674,149 @@ function App() {
       <main className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
         {!selectedPdf ? (
           /* PDF Library View */
-          <div>
+          <div className="space-y-8">
             {/* Upload Section */}
-            <div className="bg-white rounded-lg shadow-sm p-6 mb-8">
-              <h2 className="text-xl font-semibold text-gray-900 mb-4">Upload PDF</h2>
-              <div className="flex items-center space-x-4">
+            <div className="bg-white rounded-2xl shadow-xl p-8 border border-gray-100">
+              <div className="text-center mb-6">
+                <div className="w-16 h-16 mx-auto mb-4 bg-gradient-to-r from-blue-500 to-indigo-600 rounded-2xl flex items-center justify-center">
+                  <svg className="w-8 h-8 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+                  </svg>
+                </div>
+                <h2 className="text-2xl font-bold text-gray-900 mb-2">Upload PDF Document</h2>
+                <p className="text-gray-600">Drag and drop a PDF file or click to browse</p>
+              </div>
+              
+              <div className="relative">
                 <input
                   ref={fileInputRef}
                   type="file"
                   accept=".pdf"
                   onChange={handleFileUpload}
                   disabled={isUploading}
-                  className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-semibold file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100"
+                  className="absolute inset-0 w-full h-full opacity-0 cursor-pointer disabled:cursor-not-allowed"
                 />
-                {isUploading && (
-                  <div className="flex items-center space-x-2">
-                    <div className="w-32 bg-gray-200 rounded-full h-2">
-                      <div 
-                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                        style={{ width: `${uploadProgress}%` }}
-                      ></div>
+                <div className={`border-2 border-dashed rounded-xl p-8 text-center transition-all duration-200 ${
+                  isUploading 
+                    ? 'border-blue-300 bg-blue-50' 
+                    : 'border-gray-300 hover:border-blue-400 hover:bg-blue-50'
+                }`}>
+                  {isUploading ? (
+                    <div className="space-y-4">
+                      <div className="w-full bg-gray-200 rounded-full h-3">
+                        <div 
+                          className="bg-gradient-to-r from-blue-500 to-indigo-600 h-3 rounded-full transition-all duration-300"
+                          style={{ width: `${uploadProgress}%` }}
+                        ></div>
+                      </div>
+                      <p className="text-blue-600 font-medium">Uploading... {Math.round(uploadProgress)}%</p>
                     </div>
-                    <span className="text-sm text-gray-600">{Math.round(uploadProgress)}%</span>
-                  </div>
-                )}
+                  ) : (
+                    <div>
+                      <svg className="w-12 h-12 mx-auto text-gray-400 mb-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                      </svg>
+                      <p className="text-lg font-medium text-gray-700">Choose PDF File</p>
+                      <p className="text-sm text-gray-500 mt-1">or drag and drop it here</p>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
 
             {/* PDF List */}
-            <div className="bg-white rounded-lg shadow-sm">
+            <div className="bg-white rounded-2xl shadow-xl border border-gray-100">
               <div className="p-6 border-b border-gray-200">
-                <h2 className="text-xl font-semibold text-gray-900">Your PDFs</h2>
+                <div className="flex items-center justify-between">
+                  <div>
+                    <h2 className="text-2xl font-bold text-gray-900">Your PDF Library</h2>
+                    <p className="text-gray-600 mt-1">{pdfs.length} {pdfs.length === 1 ? 'document' : 'documents'}</p>
+                  </div>
+                  <div className="flex items-center space-x-2">
+                    <svg className="w-6 h-6 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10" />
+                    </svg>
+                  </div>
+                </div>
               </div>
               
               {loading ? (
-                <div className="p-8 text-center">
-                  <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-blue-500 mx-auto"></div>
-                  <p className="mt-2 text-gray-600">Loading PDFs...</p>
+                <div className="p-12 text-center">
+                  <div className="animate-spin rounded-full h-12 w-12 border-4 border-gray-200 border-t-blue-500 mx-auto"></div>
+                  <p className="mt-4 text-gray-600 font-medium">Loading your documents...</p>
                 </div>
               ) : pdfs.length === 0 ? (
-                <div className="p-8 text-center text-gray-500">
-                  <p>No PDFs uploaded yet. Upload your first PDF to get started!</p>
+                <div className="p-12 text-center">
+                  <div className="w-20 h-20 mx-auto mb-4 bg-gray-100 rounded-2xl flex items-center justify-center">
+                    <svg className="w-10 h-10 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 13h6m-3-3v6m5 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                    </svg>
+                  </div>
+                  <h3 className="text-lg font-semibold text-gray-900 mb-2">No documents yet</h3>
+                  <p className="text-gray-500">Upload your first PDF to get started with annotations!</p>
                 </div>
               ) : (
-                <div className="divide-y divide-gray-200">
+                <div className="divide-y divide-gray-100">
                   {pdfs.map((pdf) => (
-                    <div key={pdf.id} className="p-6 hover:bg-gray-50 transition-colors">
-                      <div className="flex items-center justify-between">
-                        <div className="flex-1">
-                          <h3 className="text-lg font-medium text-gray-900">{pdf.originalName}</h3>
-                          <p className="text-sm text-gray-500">
-                            Uploaded: {new Date(pdf.uploadedAt).toLocaleDateString()}
-                          </p>
-                          <p className="text-sm text-gray-500">
-                            Annotations: {Object.keys(pdf.annotations_data || {}).length} pages
-                          </p>
+                    <div key={pdf.id} className="p-6 hover:bg-gray-50 transition-all duration-200">
+                      <div className="flex items-start justify-between">
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center space-x-3">
+                            <div className="w-12 h-12 bg-gradient-to-r from-red-500 to-pink-500 rounded-xl flex items-center justify-center flex-shrink-0">
+                              <svg className="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                              </svg>
+                            </div>
+                            <div className="min-w-0 flex-1">
+                              <h3 className="text-lg font-semibold text-gray-900 truncate">{pdf.originalName}</h3>
+                              <div className="flex items-center space-x-4 mt-1">
+                                <p className="text-sm text-gray-500">
+                                  📅 {new Date(pdf.uploadedAt).toLocaleDateString()}
+                                </p>
+                                <p className="text-sm text-gray-500">
+                                  📝 {Object.keys(pdf.annotations_data || {}).length} annotated pages
+                                </p>
+                              </div>
+                            </div>
+                          </div>
                         </div>
-                        <div className="flex items-center space-x-2">
+                        <div className="flex items-center space-x-2 ml-4">
                           <button
                             onClick={() => openPdf(pdf)}
-                            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+                            className="px-4 py-2 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-all duration-200 flex items-center space-x-2 shadow-sm"
                           >
-                            Open
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />
+                            </svg>
+                            <span>Open</span>
                           </button>
                           <button
                             onClick={() => downloadPdf(pdf)}
-                            className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+                            className="px-4 py-2 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-all duration-200 flex items-center space-x-2 shadow-sm"
                           >
-                            Download
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                            </svg>
+                            <span>Download</span>
                           </button>
                           <button
                             onClick={() => exportAnnotations(pdf)}
-                            className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-colors"
+                            className="px-4 py-2 bg-purple-500 text-white rounded-lg hover:bg-purple-600 transition-all duration-200 flex items-center space-x-2 shadow-sm"
                           >
-                            Export
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                            </svg>
+                            <span>Export</span>
                           </button>
                           <button
                             onClick={() => deletePdf(pdf)}
-                            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
+                            className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-all duration-200 flex items-center space-x-2 shadow-sm"
                           >
-                            Delete
+                            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                            <span>Delete</span>
                           </button>
                         </div>
                       </div>

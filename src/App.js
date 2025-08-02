@@ -1,40 +1,23 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { Document, Page, pdfjs } from 'react-pdf';
 import { createClient } from '@supabase/supabase-js';
-import { initializeApp } from 'firebase/app';
-import { getAuth, onAuthStateChanged } from 'firebase/auth';
-import { 
-  getFirestore, 
-  collection, 
-  doc, 
-  setDoc, 
-  getDocs, 
-  deleteDoc, 
-  query, 
-  orderBy 
-} from 'firebase/firestore';
 
 // Configure PDF.js worker
 pdfjs.GlobalWorkerOptions.workerSrc = `https://unpkg.com/pdfjs-dist@${pdfjs.version}/build/pdf.worker.min.js`;
 
-// Initialize Firebase (using global variables from Canvas environment)
-const firebaseConfig = window.__firebase_config;
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-// Initialize Supabase (using placeholder values - to be filled in)
-const supabaseUrl = 'YOUR_SUPABASE_URL';
-const supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
+// Initialize Supabase with your credentials
+const supabaseUrl = 'https://zfohraoldbaubkrjppec.supabase.co';
+const supabaseAnonKey = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6Inpmb2hyYW9sZGJhdWJrcmpwcGVjIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NTM5ODI0NzMsImV4cCI6MjA2OTU1ODQ3M30.CrCKNy0UEGmfaAvveKbI72IadyU9xQi3D91BlMGomy4';
 const supabase = createClient(supabaseUrl, supabaseAnonKey);
-
-// App ID for Firestore structure
-const appId = window.__app_id;
 
 function App() {
   // Authentication state
   const [user, setUser] = useState(null);
   const [authLoading, setAuthLoading] = useState(true);
+  const [showAuthModal, setShowAuthModal] = useState(false);
+  const [authMode, setAuthMode] = useState('login'); // 'login' or 'signup'
+  const [email, setEmail] = useState('');
+  const [password, setPassword] = useState('');
 
   // PDF management state
   const [pdfs, setPdfs] = useState([]);
@@ -66,15 +49,27 @@ function App() {
 
   // Initialize authentication
   useEffect(() => {
-    const unsubscribe = onAuthStateChanged(auth, (user) => {
-      setUser(user);
+    // Get initial session
+    const getSession = async () => {
+      const { data: { session } } = await supabase.auth.getSession();
+      setUser(session?.user ?? null);
       setAuthLoading(false);
-      if (user) {
-        loadUserPdfs(user.uid);
+      if (session?.user) {
+        loadUserPdfs(session.user.id);
+      }
+    };
+
+    getSession();
+
+    // Listen for auth changes
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user) {
+        loadUserPdfs(session.user.id);
       }
     });
 
-    return () => unsubscribe();
+    return () => subscription.unsubscribe();
   }, []);
 
   // Show modal helper
@@ -84,20 +79,19 @@ function App() {
     setShowModal(true);
   };
 
-  // Load user's PDFs from Firestore
+  // Load user's PDFs from Supabase
   const loadUserPdfs = async (userId) => {
     try {
       setLoading(true);
-      const pdfsRef = collection(db, `artifacts/${appId}/users/${userId}/pdfs`);
-      const q = query(pdfsRef, orderBy('uploadedAt', 'desc'));
-      const querySnapshot = await getDocs(q);
+      const { data, error } = await supabase
+        .from('pdfs')
+        .select('*')
+        .eq('user_id', userId)
+        .order('uploaded_at', { ascending: false });
       
-      const userPdfs = [];
-      querySnapshot.forEach((doc) => {
-        userPdfs.push({ id: doc.id, ...doc.data() });
-      });
+      if (error) throw error;
       
-      setPdfs(userPdfs);
+      setPdfs(data || []);
     } catch (error) {
       console.error('Error loading PDFs:', error);
       showModalMessage('Failed to load PDFs. Please try again.', 'error');
@@ -129,7 +123,7 @@ function App() {
 
       // Upload to Supabase Storage
       const { data, error } = await supabase.storage
-        .from('pdf_documents')
+        .from('secondmain')
         .upload(filePath, file, {
           onUploadProgress: (progress) => {
             setUploadProgress((progress.loaded / progress.total) * 100);
@@ -140,26 +134,27 @@ function App() {
 
       // Get public URL
       const { data: { publicUrl } } = supabase.storage
-        .from('pdf_documents')
+        .from('secondmain')
         .getPublicUrl(filePath);
 
-      // Save metadata to Firestore
-      const pdfId = `pdf_${timestamp}`;
+      // Save metadata to Supabase
       const pdfMetadata = {
-        originalName: file.name,
-        storagePath: filePath,
-        publicUrl: publicUrl,
-        uploadedAt: new Date().toISOString(),
+        user_id: user.id,
+        original_name: file.name,
+        storage_path: filePath,
+        public_url: publicUrl,
+        uploaded_at: new Date().toISOString(),
         annotations_data: {}
       };
 
-      await setDoc(
-        doc(db, `artifacts/${appId}/users/${user.uid}/pdfs`, pdfId),
-        pdfMetadata
-      );
+      const { error: dbError } = await supabase
+        .from('pdfs')
+        .insert([pdfMetadata]);
+
+      if (dbError) throw dbError;
 
       // Refresh PDF list
-      await loadUserPdfs(user.uid);
+      await loadUserPdfs(user.id);
       showModalMessage('PDF uploaded successfully!', 'success');
 
     } catch (error) {
@@ -307,16 +302,18 @@ function App() {
     redrawAnnotations();
   };
 
-  // Save annotations to Firestore
+  // Save annotations to Supabase
   const saveAnnotations = async (annotationsData) => {
     if (!selectedPdf || !user) return;
 
     try {
-      await setDoc(
-        doc(db, `artifacts/${appId}/users/${user.uid}/pdfs`, selectedPdf.id),
-        { annotations_data: annotationsData },
-        { merge: true }
-      );
+      const { error } = await supabase
+        .from('pdfs')
+        .update({ annotations_data: annotationsData })
+        .eq('id', selectedPdf.id)
+        .eq('user_id', user.id);
+
+      if (error) throw error;
     } catch (error) {
       console.error('Error saving annotations:', error);
       showModalMessage('Failed to save annotations. Please try again.', 'error');
@@ -336,15 +333,15 @@ function App() {
   const downloadPdf = async (pdf) => {
     try {
       const { data, error } = await supabase.storage
-        .from('pdf_documents')
-        .download(pdf.storagePath);
+        .from('secondmain')
+        .download(pdf.storage_path);
 
       if (error) throw error;
 
       const url = URL.createObjectURL(data);
       const a = document.createElement('a');
       a.href = url;
-      a.download = pdf.originalName;
+      a.download = pdf.original_name;
       document.body.appendChild(a);
       a.click();
       document.body.removeChild(a);
@@ -360,7 +357,7 @@ function App() {
   // Export annotations as JSON
   const exportAnnotations = (pdf) => {
     const annotationsData = {
-      pdfName: pdf.originalName,
+      pdfName: pdf.original_name,
       exportedAt: new Date().toISOString(),
       annotations: pdf.annotations_data || {}
     };
@@ -372,13 +369,74 @@ function App() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `${pdf.originalName.replace('.pdf', '')}_annotations.json`;
+    a.download = `${pdf.original_name.replace('.pdf', '')}_annotations.json`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
 
     showModalMessage('Annotations exported successfully!', 'success');
+  };
+
+  // Authentication functions
+  const handleLogin = async (e) => {
+    e.preventDefault();
+    try {
+      setLoading(true);
+      const { error } = await supabase.auth.signInWithPassword({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      setShowAuthModal(false);
+      setEmail('');
+      setPassword('');
+      showModalMessage('Successfully logged in!', 'success');
+    } catch (error) {
+      console.error('Login error:', error);
+      showModalMessage(error.message || 'Failed to log in. Please try again.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleSignup = async (e) => {
+    e.preventDefault();
+    try {
+      setLoading(true);
+      const { error } = await supabase.auth.signUp({
+        email,
+        password,
+      });
+
+      if (error) throw error;
+
+      showModalMessage('Check your email for the confirmation link!', 'success');
+      setShowAuthModal(false);
+      setEmail('');
+      setPassword('');
+    } catch (error) {
+      console.error('Signup error:', error);
+      showModalMessage(error.message || 'Failed to sign up. Please try again.', 'error');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleLogout = async () => {
+    try {
+      const { error } = await supabase.auth.signOut();
+      if (error) throw error;
+      
+      setPdfs([]);
+      setSelectedPdf(null);
+      showModalMessage('Successfully logged out!', 'success');
+    } catch (error) {
+      console.error('Logout error:', error);
+      showModalMessage('Failed to log out. Please try again.', 'error');
+    }
   };
 
   // Delete PDF
@@ -388,19 +446,25 @@ function App() {
 
       // Delete from Supabase Storage
       const { error: storageError } = await supabase.storage
-        .from('pdf_documents')
-        .remove([pdf.storagePath]);
+        .from('secondmain')
+        .remove([pdf.storage_path]);
 
       if (storageError) {
         console.error('Storage deletion error:', storageError);
-        // Continue with Firestore deletion even if storage deletion fails
+        // Continue with database deletion even if storage deletion fails
       }
 
-      // Delete from Firestore
-      await deleteDoc(doc(db, `artifacts/${appId}/users/${user.uid}/pdfs`, pdf.id));
+      // Delete from Supabase database
+      const { error: dbError } = await supabase
+        .from('pdfs')
+        .delete()
+        .eq('id', pdf.id)
+        .eq('user_id', user.id);
+
+      if (dbError) throw dbError;
 
       // Refresh PDF list
-      await loadUserPdfs(user.uid);
+      await loadUserPdfs(user.id);
       showModalMessage('PDF deleted successfully!', 'success');
 
       // Close viewer if this PDF was being viewed
@@ -436,8 +500,28 @@ function App() {
     return (
       <div className="min-h-screen bg-gray-100 flex items-center justify-center">
         <div className="text-center">
-          <h1 className="text-2xl font-bold text-gray-800 mb-4">Authentication Required</h1>
-          <p className="text-gray-600">Please log in to access the PDF Annotator.</p>
+          <h1 className="text-3xl font-bold text-gray-800 mb-4">PDF Annotator</h1>
+          <p className="text-gray-600 mb-6">Please log in to access your PDF documents</p>
+          <div className="space-x-4">
+            <button
+              onClick={() => {
+                setAuthMode('login');
+                setShowAuthModal(true);
+              }}
+              className="px-6 py-3 bg-blue-500 text-white rounded-lg hover:bg-blue-600 transition-colors"
+            >
+              Log In
+            </button>
+            <button
+              onClick={() => {
+                setAuthMode('signup');
+                setShowAuthModal(true);
+              }}
+              className="px-6 py-3 bg-green-500 text-white rounded-lg hover:bg-green-600 transition-colors"
+            >
+              Sign Up
+            </button>
+          </div>
         </div>
       </div>
     );
@@ -451,16 +535,25 @@ function App() {
           <div className="flex justify-between items-center">
             <div>
               <h1 className="text-2xl font-bold text-gray-900">PDF Annotator</h1>
-              <p className="text-sm text-gray-600">User ID: {user.uid}</p>
+              <p className="text-sm text-gray-600">User: {user.email}</p>
+              <p className="text-xs text-gray-500">ID: {user.id}</p>
             </div>
-            {selectedPdf && (
+            <div className="flex items-center space-x-4">
+              {selectedPdf && (
+                <button
+                  onClick={closePdfViewer}
+                  className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                >
+                  ← Back to Library
+                </button>
+              )}
               <button
-                onClick={closePdfViewer}
-                className="px-4 py-2 bg-gray-500 text-white rounded-lg hover:bg-gray-600 transition-colors"
+                onClick={handleLogout}
+                className="px-4 py-2 bg-red-500 text-white rounded-lg hover:bg-red-600 transition-colors"
               >
-                ← Back to Library
+                Logout
               </button>
-            )}
+            </div>
           </div>
         </div>
       </header>
@@ -517,9 +610,9 @@ function App() {
                     <div key={pdf.id} className="p-6 hover:bg-gray-50 transition-colors">
                       <div className="flex items-center justify-between">
                         <div className="flex-1">
-                          <h3 className="text-lg font-medium text-gray-900">{pdf.originalName}</h3>
+                          <h3 className="text-lg font-medium text-gray-900">{pdf.original_name}</h3>
                           <p className="text-sm text-gray-500">
-                            Uploaded: {new Date(pdf.uploadedAt).toLocaleDateString()}
+                            Uploaded: {new Date(pdf.uploaded_at).toLocaleDateString()}
                           </p>
                           <p className="text-sm text-gray-500">
                             Annotations: {Object.keys(pdf.annotations_data || {}).length} pages
@@ -564,7 +657,7 @@ function App() {
             {/* Toolbar */}
             <div className="p-4 border-b border-gray-200 flex items-center justify-between flex-wrap gap-4">
               <div className="flex items-center space-x-4">
-                <h2 className="text-lg font-semibold text-gray-900">{selectedPdf.originalName}</h2>
+                <h2 className="text-lg font-semibold text-gray-900">{selectedPdf.original_name}</h2>
                 
                 {/* Page Navigation */}
                 {numPages && (
@@ -646,7 +739,7 @@ function App() {
                 style={{ cursor: isDrawing ? 'crosshair' : 'crosshair' }}
               >
                 <Document
-                  file={selectedPdf.publicUrl}
+                  file={selectedPdf.public_url}
                   onLoadSuccess={onDocumentLoadSuccess}
                   onLoadError={(error) => {
                     console.error('PDF load error:', error);
@@ -707,6 +800,82 @@ function App() {
             >
               OK
             </button>
+          </div>
+        </div>
+      )}
+
+      {/* Authentication Modal */}
+      {showAuthModal && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
+          <div className="bg-white rounded-lg p-6 max-w-md w-full mx-4">
+            <div className="flex items-center justify-between mb-6">
+              <h3 className="text-xl font-semibold text-gray-900">
+                {authMode === 'login' ? 'Log In' : 'Sign Up'}
+              </h3>
+              <button
+                onClick={() => setShowAuthModal(false)}
+                className="text-gray-500 hover:text-gray-700"
+              >
+                ✕
+              </button>
+            </div>
+            
+            <form onSubmit={authMode === 'login' ? handleLogin : handleSignup}>
+              <div className="mb-4">
+                <label htmlFor="email" className="block text-sm font-medium text-gray-700 mb-2">
+                  Email
+                </label>
+                <input
+                  type="email"
+                  id="email"
+                  value={email}
+                  onChange={(e) => setEmail(e.target.value)}
+                  required
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Enter your email"
+                />
+              </div>
+              
+              <div className="mb-6">
+                <label htmlFor="password" className="block text-sm font-medium text-gray-700 mb-2">
+                  Password
+                </label>
+                <input
+                  type="password"
+                  id="password"
+                  value={password}
+                  onChange={(e) => setPassword(e.target.value)}
+                  required
+                  minLength={6}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+                  placeholder="Enter your password"
+                />
+              </div>
+              
+              <button
+                type="submit"
+                disabled={loading}
+                className={`w-full py-3 px-4 rounded-lg text-white font-medium transition-colors ${
+                  authMode === 'login'
+                    ? 'bg-blue-500 hover:bg-blue-600 disabled:bg-blue-300'
+                    : 'bg-green-500 hover:bg-green-600 disabled:bg-green-300'
+                }`}
+              >
+                {loading ? 'Processing...' : authMode === 'login' ? 'Log In' : 'Sign Up'}
+              </button>
+            </form>
+            
+            <div className="mt-4 text-center">
+              <button
+                onClick={() => setAuthMode(authMode === 'login' ? 'signup' : 'login')}
+                className="text-sm text-blue-500 hover:text-blue-600"
+              >
+                {authMode === 'login' 
+                  ? "Don't have an account? Sign up"
+                  : "Already have an account? Log in"
+                }
+              </button>
+            </div>
           </div>
         </div>
       )}

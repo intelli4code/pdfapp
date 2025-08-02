@@ -5,7 +5,8 @@ A modern, responsive React web application for PDF annotation and management. Up
 ## Features
 
 ### 🔐 User Authentication
-- Firebase Authentication integration
+- Supabase Authentication with email/password
+- Login and signup functionality
 - User-specific data isolation
 - Secure access control
 
@@ -25,9 +26,9 @@ A modern, responsive React web application for PDF annotation and management. Up
 - Page-by-page annotation management
 
 ### 💾 Data Persistence
-- Annotations saved automatically to Firestore
+- Annotations saved automatically to Supabase Database
 - Seamless cross-session and cross-device annotation persistence
-- Structured data storage: `artifacts/{appId}/users/{userId}/pdfs/{pdfId}`
+- Structured data storage in `pdfs` table with user isolation
 
 ### 📥 Export & Download
 - Download original PDF files
@@ -46,11 +47,10 @@ A modern, responsive React web application for PDF annotation and management. Up
 Before running this application, ensure you have:
 
 1. **Node.js** (version 16 or higher)
-2. **Firebase Project** with:
-   - Firestore Database enabled
-   - Authentication configured
-3. **Supabase Project** with:
-   - Storage bucket named `pdf_documents`
+2. **Supabase Project** with:
+   - Authentication enabled
+   - Storage bucket named `secondmain`
+   - Database table `pdfs` created
    - Appropriate Row Level Security (RLS) policies
 
 ## Installation
@@ -62,35 +62,34 @@ Before running this application, ensure you have:
    npm install
    ```
 
-3. **Configure Firebase:**
-   - The application expects global variables to be available:
-     - `window.__firebase_config`: Your Firebase configuration object
-     - `window.__app_id`: Your application ID for Firestore structure
-     - `window.__initial_auth_token`: Initial authentication token
+3. **Set up Supabase Database:**
+   - Run the SQL commands from `supabase-setup.sql` in your Supabase SQL editor
+   - This creates the `pdfs` table and sets up Row Level Security policies
 
-4. **Configure Supabase:**
-   - Update the Supabase configuration in `App.js`:
-   ```javascript
-   const supabaseUrl = 'YOUR_SUPABASE_URL';
-   const supabaseAnonKey = 'YOUR_SUPABASE_ANON_KEY';
-   ```
+4. **Set up Supabase Storage:**
+   - Create a storage bucket named `secondmain`
+   - Configure RLS policies for the bucket (see `supabase-setup.sql` comments)
 
-5. **Set up Supabase Storage:**
-   - Create a storage bucket named `pdf_documents`
-   - Configure RLS policies to allow authenticated users access to their own files
+5. **Configure Environment:**
+   - The Supabase credentials are already configured in the application:
+     - URL: `https://zfohraoldbaubkrjppec.supabase.co`
+     - Anon Key: `eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...`
 
 ## Project Structure
 
 ```
 pdf-annotator/
+├── src/
+│   ├── App.js             # Main React component
+│   ├── index.js           # React application entry point
+│   └── index.css          # Tailwind CSS and custom styles
 ├── public/
-│   └── index.html          # Main HTML template
-├── App.js                  # Main React component
-├── index.js               # React application entry point
-├── index.css              # Tailwind CSS and custom styles
+│   └── index.html         # Main HTML template
 ├── package.json           # Dependencies and scripts
 ├── tailwind.config.js     # Tailwind CSS configuration
 ├── postcss.config.js      # PostCSS configuration
+├── supabase-setup.sql     # Database setup script
+├── netlify.toml           # Netlify deployment configuration
 └── README.md              # This file
 ```
 
@@ -106,7 +105,10 @@ The application will open in your browser at `http://localhost:3000`.
 
 ### Using the PDF Annotator
 
-1. **Authentication**: Ensure you're logged in through Firebase Authentication
+1. **Authentication**: 
+   - Click "Sign Up" to create a new account or "Log In" to access existing account
+   - Use a valid email address and password (minimum 6 characters)
+   - Check your email for confirmation link when signing up
 2. **Upload PDFs**: Use the upload section to select and upload PDF files
 3. **View PDFs**: Click "Open" on any PDF in your library to start viewing
 4. **Annotate**: 
@@ -116,6 +118,7 @@ The application will open in your browser at `http://localhost:3000`.
 5. **Navigate**: Use page controls and zoom buttons to navigate through the PDF
 6. **Export**: Download original PDFs or export annotations as JSON files
 7. **Manage**: Delete PDFs when no longer needed
+8. **Logout**: Click the "Logout" button in the header to sign out
 
 ### Annotation Tools
 
@@ -130,20 +133,24 @@ The application will open in your browser at `http://localhost:3000`.
 The application follows a component-based architecture with:
 
 - **State Management**: React hooks for local state management
-- **Data Layer**: Firebase Firestore for metadata and annotations
+- **Authentication**: Supabase Auth for user management
+- **Data Layer**: Supabase Database for metadata and annotations
 - **File Storage**: Supabase Storage for PDF files
 - **PDF Rendering**: react-pdf library with custom canvas overlay
 - **Styling**: Tailwind CSS for responsive design
 
 ### Data Structure
 
-**Firestore Document Structure:**
-```javascript
+**Supabase Database Structure:**
+```sql
+-- pdfs table
 {
-  originalName: "document.pdf",
-  storagePath: "userId/timestamp_filename.pdf",
-  publicUrl: "https://...",
-  uploadedAt: "2024-01-01T00:00:00.000Z",
+  id: 1,
+  user_id: "uuid-string",
+  original_name: "document.pdf",
+  storage_path: "userId/timestamp_filename.pdf",
+  public_url: "https://...",
+  uploaded_at: "2024-01-01T00:00:00.000Z",
   annotations_data: {
     "1": [  // Page number
       {
@@ -164,9 +171,10 @@ The application follows a component-based architecture with:
 
 1. **Canvas Overlay**: Custom HTML5 Canvas positioned absolutely over react-pdf pages
 2. **Annotation Drawing**: Mouse event handlers for interactive rectangle drawing
-3. **Data Persistence**: Real-time saves to Firestore using merge operations
-4. **File Management**: Supabase Storage integration with progress tracking
-5. **Responsive Design**: Tailwind CSS with mobile-first approach
+3. **Authentication System**: Complete login/signup flow with Supabase Auth
+4. **Data Persistence**: Real-time saves to Supabase Database with RLS
+5. **File Management**: Supabase Storage integration with progress tracking
+6. **Responsive Design**: Tailwind CSS with mobile-first approach
 
 ## Browser Compatibility
 
